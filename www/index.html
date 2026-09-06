@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>مراقبة الراوتر</title>
+<style>
+  :root {
+    --bg: #f7f8fa;
+    --text: #222;
+    --border: #ccc;
+    --title: #1a5276;
+    --btn-bg: #1a5276;
+    --btn-hover: #154360;
+    --hint: #666;
+    --status: #2e7d32;
+    --danger: #b03a2e;
+  }
+  body[data-theme="dark"] {
+    --bg: #1f2124;
+    --text: #eceef0;
+    --border: #454850;
+    --title: #7db8e8;
+    --btn-bg: #2c6a9e;
+    --btn-hover: #3a7fb8;
+    --hint: #a3a7ad;
+    --status: #6fcf7a;
+    --danger: #e57368;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+    margin: 0;
+    padding: 14px;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-tap-highlight-color: transparent;
+  }
+  .header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  h1 {
+    font-size: 17px;
+    margin: 0;
+    text-align: center;
+    color: var(--title);
+    flex: 1;
+  }
+  #darkToggle, #settingsToggle {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 15px;
+    padding: 5px 9px;
+    color: var(--text);
+  }
+  #panel {
+    display: none;
+    max-height: 60vh;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    background: color-mix(in srgb, var(--bg) 92%, var(--text) 8%);
+  }
+  #panel.open { display: block; }
+  label {
+    display: block;
+    font-size: 13px;
+    margin-bottom: 4px;
+    margin-top: 10px;
+    font-weight: 600;
+  }
+  input[type="text"], input[type="number"] {
+    width: 100%;
+    padding: 7px 9px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px;
+    background: var(--bg);
+    color: var(--text);
+  }
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 12px;
+  }
+  .hint { font-size: 11px; color: var(--hint); margin-top: 3px; }
+  button.action {
+    width: 100%;
+    margin-top: 14px;
+    padding: 9px;
+    border: none;
+    border-radius: 6px;
+    background: var(--btn-bg);
+    color: #fff;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button.action:hover { background: var(--btn-hover); }
+  button.secondary { background: #5d6d7e; }
+  #status {
+    margin-top: 8px;
+    font-size: 12px;
+    text-align: center;
+    color: var(--status);
+    min-height: 16px;
+  }
+  #banner {
+    display: none;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--danger);
+    color: #fff;
+    font-size: 13px;
+    margin-bottom: 10px;
+    text-align: center;
+  }
+  #banner.show { display: block; }
+  #frameWrap {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    height: 65vh;
+  }
+  #routerFrame {
+    width: 100%;
+    height: 100%;
+    border: none;
+    background: #fff;
+  }
+  #liveStatus {
+    font-size: 11px;
+    color: var(--hint);
+    text-align: center;
+    margin-top: 6px;
+  }
+</style>
+</head>
+<body>
+
+  <div class="header-row">
+    <button id="darkToggle" type="button" title="الوضع الليلي">🌙</button>
+    <h1>مراقبة الراوتر</h1>
+    <button id="settingsToggle" type="button" title="الإعدادات">⚙️</button>
+  </div>
+
+  <div id="banner"></div>
+
+  <div id="panel">
+    <label for="url">الرابط أو العنوان (مثال: 192.168.1.1)</label>
+    <input type="text" id="url" placeholder="192.168.1.1" />
+    <div class="hint">هيتم تحميل هذا الرابط داخل التطبيق. يجب أن يكون جهازك متصلاً بنفس شبكة الراوتر.</div>
+
+    <label for="interval">التحديث كل (بالثواني)</label>
+    <input type="number" id="interval" min="15" step="1" />
+    <div class="hint">الحد الأدنى الموصى به 15 ثانية</div>
+
+    <label for="linkUrlAttr">قيمة خاصية url في رابط الزرار</label>
+    <input type="text" id="linkUrlAttr" placeholder="trafficCtrl.htm" />
+
+    <label for="linkText">أو نص الزرار الظاهر (احتياطي)</label>
+    <input type="text" id="linkText" placeholder="Bandwidth Control" />
+
+    <div class="toggle-row">
+      <label for="alertOnChange" style="margin:0;">تنبيه صوتي عند تغيّر البيانات</label>
+      <input type="checkbox" id="alertOnChange" />
+    </div>
+
+    <label for="valueFieldId">معرف الحقل (id) المراد مراقبته</label>
+    <input type="text" id="valueFieldId" placeholder="downTotalBW" />
+
+    <label for="referenceValue">القيمة المرجعية (الرقم الصحيح)</label>
+    <input type="text" id="referenceValue" placeholder="1680" />
+
+    <label for="waitSeconds">مدة الانتظار بعد الضغط (بالثواني)</label>
+    <input type="number" id="waitSeconds" min="0" step="0.5" />
+
+    <label for="beepCount">عدد نغمات صوت التنبيه</label>
+    <input type="number" id="beepCount" min="1" max="10" step="1" />
+
+    <label for="volume">مستوى صوت التنبيه (%)</label>
+    <input type="number" id="volume" min="1" max="100" step="5" />
+
+    <button id="testSound" type="button" class="action secondary">اختبار الصوت الآن</button>
+
+    <div class="toggle-row">
+      <label for="autoFixEnabled" style="margin:0;">تصحيح تلقائي (إرجاع القيمة المرجعية والحفظ)</label>
+      <input type="checkbox" id="autoFixEnabled" />
+    </div>
+
+    <label for="saveButtonId">معرف زرار الحفظ (id)</label>
+    <input type="text" id="saveButtonId" placeholder="editOK" />
+
+    <label for="enableCheckboxId">معرف خانة Enable (id)</label>
+    <input type="text" id="enableCheckboxId" placeholder="enableTc" />
+
+    <div class="toggle-row">
+      <label for="enabled" style="margin:0;">تفعيل المراقبة التلقائية</label>
+      <input type="checkbox" id="enabled" />
+    </div>
+
+    <button id="save" class="action">حفظ</button>
+    <div id="status"></div>
+  </div>
+
+  <div id="frameWrap">
+    <iframe id="routerFrame"></iframe>
+  </div>
+  <div id="liveStatus">—</div>
+
+<script src="app.js"></script>
+</body>
+</html>
