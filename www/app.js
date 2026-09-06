@@ -1,7 +1,6 @@
 (function () {
   "use strict";
 
-  // ---------- عناصر الواجهة ----------
   const $ = (id) => document.getElementById(id);
   const urlInput = $("url");
   const intervalInput = $("interval");
@@ -24,8 +23,8 @@
   const settingsToggle = $("settingsToggle");
   const panel = $("panel");
   const banner = $("banner");
-  const routerFrame = $("routerFrame");
   const liveStatus = $("liveStatus");
+  const openRouterBtn = $("openRouterBtn");
 
   const STORAGE_KEY = "routerMonitorSettings";
   const DEFAULTS = {
@@ -47,8 +46,8 @@
   };
 
   let timerHandle = null;
+  let bgBrowserRef = null;
 
-  // ---------- تخزين محلي (بديل chrome.storage.sync) ----------
   function loadSettings() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -63,7 +62,6 @@
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
   }
 
-  // ---------- الثيم ----------
   function applyTheme(theme) {
     document.body.setAttribute("data-theme", theme);
     darkToggle.textContent = theme === "dark" ? "☀️" : "🌙";
@@ -82,7 +80,6 @@
     panel.classList.toggle("open");
   });
 
-  // ---------- تعبئة/حفظ نموذج الإعدادات ----------
   function fillForm(data) {
     urlInput.value = data.targetUrl;
     intervalInput.value = data.intervalSeconds;
@@ -126,10 +123,9 @@
     saveSettings(settings);
     statusEl.textContent = "تم الحفظ بنجاح ✓";
     setTimeout(() => (statusEl.textContent = ""), 1800);
-    loadFrameAndRestart(settings);
+    restartTimer(settings);
   });
 
-  // ---------- تحميل صفحة الراوتر في الـ iframe ----------
   function normalizeUrl(target) {
     if (!/^https?:\/\//i.test(target)) {
       return "http://" + target;
@@ -137,162 +133,123 @@
     return target;
   }
 
-  function loadFrameAndRestart(settings) {
+  openRouterBtn.addEventListener("click", () => {
+    const settings = loadSettings();
     const url = normalizeUrl(settings.targetUrl);
-    if (routerFrame.src !== url) {
-      routerFrame.src = url;
+    if (window.cordova && cordova.InAppBrowser) {
+      cordova.InAppBrowser.open(url, "_blank", "location=yes,toolbar=yes");
+    } else {
+      window.open(url, "_blank");
     }
-    restartTimer(settings);
+  });
+
+  function buildInjectionScript(settings) {
+    return `
+      (function() {
+        function findAndClick(root, linkUrlAttr, linkText) {
+          if (linkUrlAttr) {
+            var byAttr = root.querySelector('a[url="' + linkUrlAttr + '"]');
+            if (byAttr) { byAttr.click(); return true; }
+          }
+          if (linkText) {
+            var links = root.querySelectorAll('a');
+            for (var i = 0; i < links.length; i++) {
+              if (links[i].textContent && links[i].textContent.trim().indexOf(linkText) !== -1) {
+                links[i].click();
+                return true;
+              }
+            }
+          }
+          return false;
+        }
+        function tryClick(doc, linkUrlAttr, linkText) {
+          if (findAndClick(doc, linkUrlAttr, linkText)) return true;
+          var frames = doc.querySelectorAll('iframe');
+          for (var i = 0; i < frames.length; i++) {
+            try {
+              if (frames[i].contentDocument && findAndClick(frames[i].contentDocument, linkUrlAttr, linkText)) return true;
+            } catch(e) {}
+          }
+          return false;
+        }
+        tryClick(document, ${JSON.stringify(settings.linkUrlAttr)}, ${JSON.stringify(settings.linkText)});
+        true;
+      })();
+    `;
   }
 
-  // ---------- الدوال اللي بتشتغل جوه محتوى iframe (نفس منطق content script الأصلي) ----------
-  function getFrameDoc() {
-    try {
-      return routerFrame.contentDocument || routerFrame.contentWindow.document;
-    } catch (e) {
-      // في حالة القيود الأمنية بين الأصول (cross-origin) الوصول ممنوع
-      return null;
-    }
+  function buildReadScript(settings) {
+    return `
+      (function() {
+        function findValue(root, fieldId) {
+          var el = root.getElementById ? root.getElementById(fieldId) : null;
+          if (el) return (el.value !== undefined ? el.value : el.textContent);
+          return null;
+        }
+        function findChecked(root, checkboxId) {
+          var el = root.getElementById ? root.getElementById(checkboxId) : null;
+          if (el) return !!el.checked;
+          return null;
+        }
+        function searchAll(fn, id) {
+          var v = fn(document, id);
+          if (v !== null) return v;
+          var frames = document.querySelectorAll('iframe');
+          for (var i = 0; i < frames.length; i++) {
+            try {
+              if (frames[i].contentDocument) {
+                var v2 = fn(frames[i].contentDocument, id);
+                if (v2 !== null) return v2;
+              }
+            } catch(e) {}
+          }
+          return null;
+        }
+        var value = searchAll(findValue, ${JSON.stringify(settings.valueFieldId)});
+        var checked = searchAll(findChecked, ${JSON.stringify(settings.enableCheckboxId)});
+        JSON.stringify({ value: value, checked: checked });
+      })();
+    `;
   }
 
-  function clickMenuLink(doc, linkUrlAttr, linkText) {
-    function findAndClick(root) {
-      if (linkUrlAttr) {
-        const byAttr = root.querySelector(`a[url="${linkUrlAttr}"]`);
-        if (byAttr) {
-          byAttr.click();
+  function buildFixScript(settings, needEnableFix, needSpeedFix, referenceValue) {
+    return `
+      (function() {
+        function findEl(root, id) { return root.getElementById ? root.getElementById(id) : null; }
+        function tryInDoc(d) {
+          var saveButtonEl = findEl(d, ${JSON.stringify(settings.saveButtonId)});
+          if (!saveButtonEl) return false;
+          var field = ${needSpeedFix} ? findEl(d, ${JSON.stringify(settings.valueFieldId)}) : null;
+          if (${needSpeedFix} && !field) return false;
+          var changed = false;
+          if (${needEnableFix}) {
+            var checkbox = findEl(d, ${JSON.stringify(settings.enableCheckboxId)});
+            if (checkbox && !checkbox.checked) {
+              var label = d.querySelector('label[for="' + ${JSON.stringify(settings.enableCheckboxId)} + '"]');
+              if (label) { label.click(); } else { checkbox.click(); }
+              changed = true;
+            }
+          }
+          if (${needSpeedFix} && field) {
+            field.value = ${JSON.stringify(referenceValue)};
+            field.dispatchEvent(new Event('input', { bubbles: true }));
+            field.dispatchEvent(new Event('change', { bubbles: true }));
+            changed = true;
+          }
+          if (changed) { saveButtonEl.click(); }
           return true;
         }
-      }
-      if (linkText) {
-        const links = root.querySelectorAll("a");
-        for (const link of links) {
-          if (link.textContent && link.textContent.trim().includes(linkText)) {
-            link.click();
-            return true;
+        if (!tryInDoc(document)) {
+          var frames = document.querySelectorAll('iframe');
+          for (var i = 0; i < frames.length; i++) {
+            try { if (frames[i].contentDocument && tryInDoc(frames[i].contentDocument)) break; } catch(e) {}
           }
         }
-      }
-      return false;
-    }
-
-    if (findAndClick(doc)) return { status: "clicked_top" };
-
-    const frames = doc.querySelectorAll("iframe");
-    for (const frame of frames) {
-      try {
-        if (frame.contentDocument && findAndClick(frame.contentDocument)) {
-          return { status: "clicked_iframe", frame: frame.name || frame.id };
-        }
-      } catch (e) {}
-    }
-    return { status: "not_found" };
+        true;
+      })();
+    `;
   }
 
-  function getFieldValue(doc, fieldId) {
-    function findValue(root) {
-      const el = root.getElementById ? root.getElementById(fieldId) : null;
-      if (el) return el.value ?? el.textContent ?? null;
-      return null;
-    }
-
-    const direct = findValue(doc);
-    if (direct !== null) return { found: true, value: direct, where: "top" };
-
-    const frames = doc.querySelectorAll("iframe");
-    for (const frame of frames) {
-      try {
-        if (frame.contentDocument) {
-          const val = findValue(frame.contentDocument);
-          if (val !== null) {
-            return { found: true, value: val, where: frame.name || frame.id || "iframe" };
-          }
-        }
-      } catch (e) {}
-    }
-    return { found: false, value: null };
-  }
-
-  function checkEnableState(doc, checkboxId) {
-    function findEl(root, id) {
-      return root.getElementById ? root.getElementById(id) : null;
-    }
-
-    const top = findEl(doc, checkboxId);
-    if (top) return { found: true, checked: !!top.checked, where: "top" };
-
-    const frames = doc.querySelectorAll("iframe");
-    for (const frame of frames) {
-      try {
-        if (frame.contentDocument) {
-          const el = findEl(frame.contentDocument, checkboxId);
-          if (el) return { found: true, checked: !!el.checked, where: frame.name || frame.id };
-        }
-      } catch (e) {}
-    }
-    return { found: false, checked: null };
-  }
-
-  async function applyFixes(doc, checkboxId, fieldId, saveBtnId, needEnableFix, needSpeedFix, referenceValue) {
-    function findEl(root, id) {
-      return root.getElementById ? root.getElementById(id) : null;
-    }
-
-    async function tryInDoc(d) {
-      const saveButtonEl = findEl(d, saveBtnId);
-      if (!saveButtonEl) return null;
-
-      const field = needSpeedFix ? findEl(d, fieldId) : null;
-      if (needSpeedFix && !field) return null;
-
-      let enableChanged = false;
-      let speedChanged = false;
-
-      if (needEnableFix) {
-        const checkbox = findEl(d, checkboxId);
-        if (checkbox && !checkbox.checked) {
-          const label = d.querySelector(`label[for="${checkboxId}"]`);
-          if (label) {
-            label.click();
-          } else {
-            checkbox.click();
-          }
-          enableChanged = true;
-          await new Promise((resolve) => setTimeout(resolve, 400));
-        }
-      }
-
-      if (needSpeedFix && field) {
-        field.value = referenceValue;
-        field.dispatchEvent(new Event("input", { bubbles: true }));
-        field.dispatchEvent(new Event("change", { bubbles: true }));
-        speedChanged = true;
-      }
-
-      if (enableChanged || speedChanged) {
-        saveButtonEl.click();
-      }
-
-      return { status: "done", enableChanged, speedChanged, saved: enableChanged || speedChanged };
-    }
-
-    const topResult = await tryInDoc(doc);
-    if (topResult) return topResult;
-
-    const frames = doc.querySelectorAll("iframe");
-    for (const frame of frames) {
-      try {
-        if (frame.contentDocument) {
-          const result = await tryInDoc(frame.contentDocument);
-          if (result) return { ...result, frame: frame.name || frame.id };
-        }
-      } catch (e) {}
-    }
-
-    return { status: "not_found" };
-  }
-
-  // ---------- التنبيه: صوت + بانر داخل الصفحة ----------
   function playBeep(count, volumeFraction) {
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -300,7 +257,6 @@
       const beepDuration = 0.3;
       const gap = 0.35;
       const peakGain = 0.5 * Math.pow(volumeFraction, 2);
-
       for (let i = 0; i < count; i++) {
         const offset = i * gap;
         const osc = ctx.createOscillator();
@@ -315,7 +271,6 @@
         osc.start(now + offset);
         osc.stop(now + offset + beepDuration + 0.02);
       }
-
       const totalDuration = (count - 1) * gap + beepDuration + 0.3;
       setTimeout(() => ctx.close(), totalDuration * 1000);
     } catch (e) {
@@ -327,14 +282,8 @@
     banner.textContent = text;
     banner.classList.add("show");
   }
-
   function hideBanner() {
     banner.classList.remove("show");
-  }
-
-  function triggerAlert(referenceValue, newValue, beepCount, volume) {
-    playBeep(beepCount, volume / 100);
-    showBanner(`القيمة الحالية مختلفة عن المرجع — المرجع: ${referenceValue} | الحالي: ${newValue} Kbps`);
   }
 
   testSoundBtn.addEventListener("click", () => {
@@ -345,23 +294,40 @@
     setTimeout(() => (statusEl.textContent = ""), 2000);
   });
 
-  // ---------- المنطق الرئيسي عند حلول موعد التحديث ----------
+  function executeScriptPromise(browserRef, script) {
+    return new Promise((resolve) => {
+      browserRef.executeScript({ code: script }, (result) => {
+        resolve(result && result.length ? result[0] : null);
+      });
+    });
+  }
+
   async function runCheckCycle() {
     const settings = loadSettings();
     if (!settings.enabled) return;
-
-    liveStatus.textContent = "جارٍ الفحص… " + new Date().toLocaleTimeString("ar-EG");
-
-    const doc = getFrameDoc();
-    if (!doc) {
-      liveStatus.textContent = "تعذر الوصول لمحتوى الصفحة (قد تكون لم تُحمَّل بعد)";
+    if (!window.cordova || !cordova.InAppBrowser) {
+      liveStatus.textContent = "مكوّن المراقبة غير متاح على هذا الجهاز";
       return;
     }
 
+    liveStatus.textContent = "جارٍ الفحص… " + new Date().toLocaleTimeString("ar-EG");
+    const url = normalizeUrl(settings.targetUrl);
+
     try {
-      clickMenuLink(doc, settings.linkUrlAttr, settings.linkText);
+      if (bgBrowserRef) {
+        try { bgBrowserRef.close(); } catch (e) {}
+      }
+      bgBrowserRef = cordova.InAppBrowser.open(url, "_blank", "hidden=yes,location=no,toolbar=no");
+
+      await new Promise((resolve) => {
+        bgBrowserRef.addEventListener("loadstop", resolve);
+        setTimeout(resolve, 6000);
+      });
+
+      await executeScriptPromise(bgBrowserRef, buildInjectionScript(settings));
 
       if (!settings.alertOnChange) {
+        bgBrowserRef.close();
         liveStatus.textContent = "آخر فحص: " + new Date().toLocaleTimeString("ar-EG");
         return;
       }
@@ -369,52 +335,37 @@
       const waitMs = Math.max(Number(settings.waitSeconds) || 0, 0) * 1000;
       await new Promise((resolve) => setTimeout(resolve, waitMs));
 
-      const freshDoc = getFrameDoc();
-      if (!freshDoc) {
-        liveStatus.textContent = "تعذر الوصول لمحتوى الصفحة بعد الانتظار";
-        return;
-      }
+      const readResult = await executeScriptPromise(bgBrowserRef, buildReadScript(settings));
+      let parsed = { value: null, checked: null };
+      try { parsed = JSON.parse(readResult); } catch (e) {}
 
-      const result = getFieldValue(freshDoc, settings.valueFieldId);
-      const enableResult = checkEnableState(freshDoc, settings.enableCheckboxId);
-
-      const needEnableFix = !!(enableResult && enableResult.found && !enableResult.checked);
-
-      let needSpeedFix = false;
       const referenceValue = String(settings.referenceValue || "").trim();
-      let newValue = null;
+      const needEnableFix = parsed.checked === false;
+      let needSpeedFix = false;
 
-      if (result && result.found && referenceValue) {
-        newValue = String(result.value).trim();
+      if (parsed.value !== null && referenceValue) {
+        const newValue = String(parsed.value).trim();
         if (newValue !== referenceValue) {
           needSpeedFix = true;
-          triggerAlert(referenceValue, newValue, settings.beepCount, settings.volume);
+          playBeep(settings.beepCount, settings.volume / 100);
+          showBanner(`القيمة الحالية مختلفة عن المرجع — المرجع: ${referenceValue} | الحالي: ${newValue} Kbps`);
         } else {
           hideBanner();
         }
       }
 
       if (settings.autoFixEnabled && (needEnableFix || needSpeedFix)) {
-        try {
-          const fixResult = await applyFixes(
-            freshDoc,
-            settings.enableCheckboxId,
-            settings.valueFieldId,
-            settings.saveButtonId,
-            needEnableFix,
-            needSpeedFix,
-            referenceValue
-          );
-          console.log("نتيجة التصحيح التلقائي:", fixResult);
-        } catch (e) {
-          console.warn("فشل التصحيح التلقائي:", e);
-        }
+        await executeScriptPromise(bgBrowserRef, buildFixScript(settings, needEnableFix, needSpeedFix, referenceValue));
       }
 
+      bgBrowserRef.close();
       liveStatus.textContent = "آخر فحص: " + new Date().toLocaleTimeString("ar-EG");
     } catch (e) {
       console.warn("فشل تنفيذ دورة الفحص:", e);
-      liveStatus.textContent = "حدث خطأ أثناء الفحص — راجع وحدة التحكم";
+      liveStatus.textContent = "حدث خطأ أثناء الفحص";
+      if (bgBrowserRef) {
+        try { bgBrowserRef.close(); } catch (err) {}
+      }
     }
   }
 
@@ -429,12 +380,14 @@
     }
   }
 
-  // ---------- بدء التشغيل ----------
   function init() {
     const settings = loadSettings();
     fillForm(settings);
-    loadFrameAndRestart(settings);
+    restartTimer(settings);
   }
 
-  init();
+  document.addEventListener("deviceready", init, false);
+  setTimeout(() => {
+    if (!timerHandle) init();
+  }, 2000);
 })();
