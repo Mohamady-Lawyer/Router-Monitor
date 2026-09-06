@@ -38,6 +38,9 @@ jobs:
         
       - name: Add Android platform
         run: cordova platform add android@13.0.0
+
+      - name: Prepare project (install plugins)
+        run: cordova prepare android
         
       - name: Build Android APK (debug)
         run: cordova build android
