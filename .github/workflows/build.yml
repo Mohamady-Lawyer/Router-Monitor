@@ -35,7 +35,10 @@ jobs:
 
       - name: Install project dependencies
         run: npm install
-
+        
+      - name: Add Android platform
+        run: cordova platform add android@13.0.0
+        
       - name: Build Android APK (debug)
         run: cordova build android
 
