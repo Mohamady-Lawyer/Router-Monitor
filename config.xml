@@ -10,4 +10,8 @@
     <content src="index.html" />
     <allow-intent href="http://*/*" />
     <allow-intent href="https://*/*" />
+        <preference name="AndroidInsecureFileModeEnabled" value="true" />
+    <edit-config target="application" file="app/src/main/AndroidManifest.xml" mode="merge">
+        <application android:usesCleartextTraffic="true" />
+    </edit-config>
 </widget>
