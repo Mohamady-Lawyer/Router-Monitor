@@ -38,6 +38,9 @@ jobs:
         
       - name: Add Android platform
         run: cordova platform add android@13.0.0
+
+      - name: Add InAppBrowser plugin explicitly
+        run: cordova plugin add cordova-plugin-inappbrowser --force
         
       - name: Build Android APK (debug)
         run: cordova build android
