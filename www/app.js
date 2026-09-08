@@ -136,11 +136,7 @@
   openRouterBtn.addEventListener("click", () => {
     const settings = loadSettings();
     const url = normalizeUrl(settings.targetUrl);
-    if (window.cordova && cordova.InAppBrowser) {
-      cordova.InAppBrowser.open(url, "_blank", "location=yes,toolbar=yes");
-    } else {
-      window.open(url, "_blank");
-    }
+    window.open(url, "_blank", "location=yes,toolbar=yes");
   });
 
   function buildInjectionScript(settings) {
@@ -305,7 +301,7 @@
   async function runCheckCycle() {
     const settings = loadSettings();
     if (!settings.enabled) return;
-    if (!window.cordova || !cordova.InAppBrowser) {
+    if (!window.open) {
       liveStatus.textContent = "مكوّن المراقبة غير متاح على هذا الجهاز";
       return;
     }
@@ -317,7 +313,7 @@
       if (bgBrowserRef) {
         try { bgBrowserRef.close(); } catch (e) {}
       }
-      bgBrowserRef = cordova.InAppBrowser.open(url, "_blank", "hidden=yes,location=no,toolbar=no");
+      bgBrowserRef = window.open(url, "_blank", "hidden=yes,location=no,toolbar=no");
 
       await new Promise((resolve) => {
         bgBrowserRef.addEventListener("loadstop", resolve);
