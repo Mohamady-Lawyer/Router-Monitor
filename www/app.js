@@ -324,6 +324,14 @@
         return;
       }
 
+      // لو صفحة تسجيل الدخول لسه ظاهرة (فيه حقل باسورد)، سيب المستخدم يسجّل دخول
+      // يدويًا من غير أي تدخل من الفحص التلقائي عشان منمنعوش من الدخول
+      if (doc.querySelector('input[type="password"]')) {
+        liveStatus.textContent = "بانتظار تسجيل الدخول يدويًا…";
+        cycleRunning = false;
+        return;
+      }
+
       // اضغط رابط "Bandwidth Control" داخل الصفحة المحمّلة فعليًا
       findAndClickInDoc(doc, settings.linkUrlAttr, settings.linkText);
 
