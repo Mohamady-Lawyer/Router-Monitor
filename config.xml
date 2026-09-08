@@ -10,7 +10,11 @@
     <content src="index.html" />
     <allow-intent href="http://*/*" />
     <allow-intent href="https://*/*" />
-        <edit-config target="/manifest/application" file="app/src/main/AndroidManifest.xml" mode="merge" xmlns:android="http://schemas.android.com/apk/res/android">
+    <allow-navigation href="*" />
+    <access origin="*" />
+    <edit-config target="/manifest/application" file="app/src/main/AndroidManifest.xml" mode="merge" xmlns:android="http://schemas.android.com/apk/res/android">
         <application android:usesCleartextTraffic="true" />
     </edit-config>
+    <preference name="MixedContentMode" value="0" />
+    <preference name="AndroidInsecureFileModeEnabled" value="true" />
 </widget>

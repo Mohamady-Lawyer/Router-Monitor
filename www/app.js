@@ -24,7 +24,8 @@
   const panel = $("panel");
   const banner = $("banner");
   const liveStatus = $("liveStatus");
-  const openRouterBtn = $("openRouterBtn");
+  const routerFrame = $("routerFrame");
+  const frameToggle = $("frameToggle");
 
   const STORAGE_KEY = "routerMonitorSettings";
   const DEFAULTS = {
@@ -46,7 +47,8 @@
   };
 
   let timerHandle = null;
-  let bgBrowserRef = null;
+  let frameLoadedUrl = null; // آخر رابط تم تحميله فعليًا في الـ iframe
+  let cycleRunning = false;
 
   function loadSettings() {
     try {
@@ -78,6 +80,11 @@
 
   settingsToggle.addEventListener("click", () => {
     panel.classList.toggle("open");
+  });
+
+  frameToggle.addEventListener("click", () => {
+    const collapsed = routerFrame.classList.toggle("collapsed");
+    frameToggle.textContent = collapsed ? "➕" : "➖";
   });
 
   function fillForm(data) {
@@ -123,6 +130,11 @@
     saveSettings(settings);
     statusEl.textContent = "تم الحفظ بنجاح ✓";
     setTimeout(() => (statusEl.textContent = ""), 1800);
+    // لو تغيّر العنوان، حمّل الرابط الجديد في الإطار
+    const newUrl = normalizeUrl(settings.targetUrl);
+    if (newUrl !== frameLoadedUrl) {
+      loadFrame(newUrl);
+    }
     restartTimer(settings);
   });
 
@@ -133,117 +145,119 @@
     return target;
   }
 
-  openRouterBtn.addEventListener("click", () => {
-    const settings = loadSettings();
+  function loadFrame(url) {
+    frameLoadedUrl = url;
+    routerFrame.src = url;
+  }
+
+  // أول تحميل للإطار عند بدء التطبيق، عشان يقدر المستخدم يسجّل الدخول يدويًا
+  function ensureFrameLoaded(settings) {
     const url = normalizeUrl(settings.targetUrl);
-    window.open(url, "_blank", "location=yes,toolbar=yes");
-  });
-
-  function buildInjectionScript(settings) {
-    return `
-      (function() {
-        function findAndClick(root, linkUrlAttr, linkText) {
-          if (linkUrlAttr) {
-            var byAttr = root.querySelector('a[url="' + linkUrlAttr + '"]');
-            if (byAttr) { byAttr.click(); return true; }
-          }
-          if (linkText) {
-            var links = root.querySelectorAll('a');
-            for (var i = 0; i < links.length; i++) {
-              if (links[i].textContent && links[i].textContent.trim().indexOf(linkText) !== -1) {
-                links[i].click();
-                return true;
-              }
-            }
-          }
-          return false;
-        }
-        function tryClick(doc, linkUrlAttr, linkText) {
-          if (findAndClick(doc, linkUrlAttr, linkText)) return true;
-          var frames = doc.querySelectorAll('iframe');
-          for (var i = 0; i < frames.length; i++) {
-            try {
-              if (frames[i].contentDocument && findAndClick(frames[i].contentDocument, linkUrlAttr, linkText)) return true;
-            } catch(e) {}
-          }
-          return false;
-        }
-        tryClick(document, ${JSON.stringify(settings.linkUrlAttr)}, ${JSON.stringify(settings.linkText)});
-        true;
-      })();
-    `;
+    if (routerFrame.src === "about:blank" || !frameLoadedUrl) {
+      loadFrame(url);
+    }
   }
 
-  function buildReadScript(settings) {
-    return `
-      (function() {
-        function findValue(root, fieldId) {
-          var el = root.getElementById ? root.getElementById(fieldId) : null;
-          if (el) return (el.value !== undefined ? el.value : el.textContent);
-          return null;
-        }
-        function findChecked(root, checkboxId) {
-          var el = root.getElementById ? root.getElementById(checkboxId) : null;
-          if (el) return !!el.checked;
-          return null;
-        }
-        function searchAll(fn, id) {
-          var v = fn(document, id);
-          if (v !== null) return v;
-          var frames = document.querySelectorAll('iframe');
-          for (var i = 0; i < frames.length; i++) {
-            try {
-              if (frames[i].contentDocument) {
-                var v2 = fn(frames[i].contentDocument, id);
-                if (v2 !== null) return v2;
-              }
-            } catch(e) {}
-          }
-          return null;
-        }
-        var value = searchAll(findValue, ${JSON.stringify(settings.valueFieldId)});
-        var checked = searchAll(findChecked, ${JSON.stringify(settings.enableCheckboxId)});
-        JSON.stringify({ value: value, checked: checked });
-      })();
-    `;
+  function getFrameDocument() {
+    try {
+      return routerFrame.contentWindow && routerFrame.contentWindow.document
+        ? routerFrame.contentWindow.document
+        : null;
+    } catch (e) {
+      // Cross-origin أو الصفحة لسه بتحمّل
+      return null;
+    }
   }
 
-  function buildFixScript(settings, needEnableFix, needSpeedFix, referenceValue) {
-    return `
-      (function() {
-        function findEl(root, id) { return root.getElementById ? root.getElementById(id) : null; }
-        function tryInDoc(d) {
-          var saveButtonEl = findEl(d, ${JSON.stringify(settings.saveButtonId)});
-          if (!saveButtonEl) return false;
-          var field = ${needSpeedFix} ? findEl(d, ${JSON.stringify(settings.valueFieldId)}) : null;
-          if (${needSpeedFix} && !field) return false;
-          var changed = false;
-          if (${needEnableFix}) {
-            var checkbox = findEl(d, ${JSON.stringify(settings.enableCheckboxId)});
-            if (checkbox && !checkbox.checked) {
-              var label = d.querySelector('label[for="' + ${JSON.stringify(settings.enableCheckboxId)} + '"]');
-              if (label) { label.click(); } else { checkbox.click(); }
-              changed = true;
-            }
-          }
-          if (${needSpeedFix} && field) {
-            field.value = ${JSON.stringify(referenceValue)};
-            field.dispatchEvent(new Event('input', { bubbles: true }));
-            field.dispatchEvent(new Event('change', { bubbles: true }));
-            changed = true;
-          }
-          if (changed) { saveButtonEl.click(); }
-          return true;
-        }
-        if (!tryInDoc(document)) {
-          var frames = document.querySelectorAll('iframe');
-          for (var i = 0; i < frames.length; i++) {
-            try { if (frames[i].contentDocument && tryInDoc(frames[i].contentDocument)) break; } catch(e) {}
+  function findAndClickInDoc(doc, linkUrlAttr, linkText) {
+    function findAndClick(root) {
+      if (linkUrlAttr) {
+        const byAttr = root.querySelector('a[url="' + linkUrlAttr + '"]');
+        if (byAttr) { byAttr.click(); return true; }
+      }
+      if (linkText) {
+        const links = root.querySelectorAll("a");
+        for (let i = 0; i < links.length; i++) {
+          if (links[i].textContent && links[i].textContent.trim().indexOf(linkText) !== -1) {
+            links[i].click();
+            return true;
           }
         }
-        true;
-      })();
-    `;
+      }
+      return false;
+    }
+    if (findAndClick(doc)) return true;
+    const frames = doc.querySelectorAll("iframe");
+    for (let i = 0; i < frames.length; i++) {
+      try {
+        if (frames[i].contentDocument && findAndClick(frames[i].contentDocument)) return true;
+      } catch (e) {}
+    }
+    return false;
+  }
+
+  function readValuesFromDoc(doc, valueFieldId, enableCheckboxId) {
+    function findValue(root, fieldId) {
+      const el = root.getElementById ? root.getElementById(fieldId) : null;
+      if (el) return el.value !== undefined ? el.value : el.textContent;
+      return null;
+    }
+    function findChecked(root, checkboxId) {
+      const el = root.getElementById ? root.getElementById(checkboxId) : null;
+      if (el) return !!el.checked;
+      return null;
+    }
+    function searchAll(fn, id) {
+      let v = fn(doc, id);
+      if (v !== null) return v;
+      const frames = doc.querySelectorAll("iframe");
+      for (let i = 0; i < frames.length; i++) {
+        try {
+          if (frames[i].contentDocument) {
+            const v2 = fn(frames[i].contentDocument, id);
+            if (v2 !== null) return v2;
+          }
+        } catch (e) {}
+      }
+      return null;
+    }
+    return {
+      value: searchAll(findValue, valueFieldId),
+      checked: searchAll(findChecked, enableCheckboxId)
+    };
+  }
+
+  function applyFixInDoc(doc, settings, needEnableFix, needSpeedFix, referenceValue) {
+    function findEl(root, id) { return root.getElementById ? root.getElementById(id) : null; }
+    function tryInDoc(d) {
+      const saveButtonEl = findEl(d, settings.saveButtonId);
+      if (!saveButtonEl) return false;
+      const field = needSpeedFix ? findEl(d, settings.valueFieldId) : null;
+      if (needSpeedFix && !field) return false;
+      let changed = false;
+      if (needEnableFix) {
+        const checkbox = findEl(d, settings.enableCheckboxId);
+        if (checkbox && !checkbox.checked) {
+          const label = d.querySelector('label[for="' + settings.enableCheckboxId + '"]');
+          if (label) { label.click(); } else { checkbox.click(); }
+          changed = true;
+        }
+      }
+      if (needSpeedFix && field) {
+        field.value = referenceValue;
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+        field.dispatchEvent(new Event("change", { bubbles: true }));
+        changed = true;
+      }
+      if (changed) { saveButtonEl.click(); }
+      return true;
+    }
+    if (!tryInDoc(doc)) {
+      const frames = doc.querySelectorAll("iframe");
+      for (let i = 0; i < frames.length; i++) {
+        try { if (frames[i].contentDocument && tryInDoc(frames[i].contentDocument)) break; } catch (e) {}
+      }
+    }
   }
 
   function playBeep(count, volumeFraction) {
@@ -290,63 +304,46 @@
     setTimeout(() => (statusEl.textContent = ""), 2000);
   });
 
-  function executeScriptPromise(browserRef, script) {
-    return new Promise((resolve) => {
-      browserRef.executeScript({ code: script }, (result) => {
-        resolve(result && result.length ? result[0] : null);
-      });
-    });
+  function waitMs(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   async function runCheckCycle() {
     const settings = loadSettings();
     if (!settings.enabled) return;
-    if (!window.open) {
-      liveStatus.textContent = "مكوّن المراقبة غير متاح على هذا الجهاز";
-      return;
-    }
+    if (cycleRunning) return; // امنع تداخل الفحوصات لو فحص سابق لسه شغال
+    cycleRunning = true;
 
     liveStatus.textContent = "جارٍ الفحص… " + new Date().toLocaleTimeString("ar-EG");
-    const url = normalizeUrl(settings.targetUrl);
 
     try {
-      if (bgBrowserRef) {
-        try { bgBrowserRef.close(); } catch (e) {}
-      }
-      bgBrowserRef = window.open(url, "_blank", "location=no,toolbar=no,zoom=no,hidden=yes");
-
-      let loadFailed = false;
-      await new Promise((resolve) => {
-        bgBrowserRef.addEventListener("loadstop", resolve);
-        bgBrowserRef.addEventListener("loaderror", (err) => {
-          loadFailed = true;
-          console.warn("فشل تحميل صفحة الراوتر:", JSON.stringify(err));
-          resolve();
-        });
-        setTimeout(resolve, 6000);
-      });
-
-      if (loadFailed) {
-        liveStatus.textContent = "تعذر تحميل صفحة الراوتر — تأكد من الاتصال بشبكتها";
-        bgBrowserRef.close();
+      const doc = getFrameDocument();
+      if (!doc || !doc.body) {
+        liveStatus.textContent = "صفحة الراوتر غير محمّلة بعد — تأكد من فتحها وتسجيل الدخول";
+        cycleRunning = false;
         return;
       }
 
-      await executeScriptPromise(bgBrowserRef, buildInjectionScript(settings));
+      // اضغط رابط "Bandwidth Control" داخل الصفحة المحمّلة فعليًا
+      findAndClickInDoc(doc, settings.linkUrlAttr, settings.linkText);
 
       if (!settings.alertOnChange) {
-        bgBrowserRef.close();
         liveStatus.textContent = "آخر فحص: " + new Date().toLocaleTimeString("ar-EG");
+        cycleRunning = false;
         return;
       }
 
-      const waitMs = Math.max(Number(settings.waitSeconds) || 0, 0) * 1000;
-      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      const waitDuration = Math.max(Number(settings.waitSeconds) || 0, 0) * 1000;
+      await waitMs(waitDuration);
 
-      const readResult = await executeScriptPromise(bgBrowserRef, buildReadScript(settings));
-      let parsed = { value: null, checked: null };
-      try { parsed = JSON.parse(readResult); } catch (e) {}
+      const docAfterWait = getFrameDocument();
+      if (!docAfterWait || !docAfterWait.body) {
+        liveStatus.textContent = "تعذر قراءة الصفحة بعد الانتظار";
+        cycleRunning = false;
+        return;
+      }
 
+      const parsed = readValuesFromDoc(docAfterWait, settings.valueFieldId, settings.enableCheckboxId);
       const referenceValue = String(settings.referenceValue || "").trim();
       const needEnableFix = parsed.checked === false;
       let needSpeedFix = false;
@@ -363,17 +360,15 @@
       }
 
       if (settings.autoFixEnabled && (needEnableFix || needSpeedFix)) {
-        await executeScriptPromise(bgBrowserRef, buildFixScript(settings, needEnableFix, needSpeedFix, referenceValue));
+        applyFixInDoc(docAfterWait, settings, needEnableFix, needSpeedFix, referenceValue);
       }
 
-      bgBrowserRef.close();
       liveStatus.textContent = "آخر فحص: " + new Date().toLocaleTimeString("ar-EG");
     } catch (e) {
       console.warn("فشل تنفيذ دورة الفحص:", e && e.message ? e.message : e);
       liveStatus.textContent = "خطأ: " + (e && e.message ? e.message : "غير معروف");
-      if (bgBrowserRef) {
-        try { bgBrowserRef.close(); } catch (err) {}
-      }
+    } finally {
+      cycleRunning = false;
     }
   }
 
@@ -391,6 +386,7 @@
   function init() {
     const settings = loadSettings();
     fillForm(settings);
+    ensureFrameLoaded(settings);
     restartTimer(settings);
   }
 
