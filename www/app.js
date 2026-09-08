@@ -313,12 +313,24 @@
       if (bgBrowserRef) {
         try { bgBrowserRef.close(); } catch (e) {}
       }
-      bgBrowserRef = window.open(url, "_blank", "hidden=yes,location=no,toolbar=no");
+      bgBrowserRef = window.open(url, "_blank", "location=no,toolbar=no,zoom=no,hidden=yes");
 
+      let loadFailed = false;
       await new Promise((resolve) => {
         bgBrowserRef.addEventListener("loadstop", resolve);
+        bgBrowserRef.addEventListener("loaderror", (err) => {
+          loadFailed = true;
+          console.warn("فشل تحميل صفحة الراوتر:", JSON.stringify(err));
+          resolve();
+        });
         setTimeout(resolve, 6000);
       });
+
+      if (loadFailed) {
+        liveStatus.textContent = "تعذر تحميل صفحة الراوتر — تأكد من الاتصال بشبكتها";
+        bgBrowserRef.close();
+        return;
+      }
 
       await executeScriptPromise(bgBrowserRef, buildInjectionScript(settings));
 
@@ -357,8 +369,8 @@
       bgBrowserRef.close();
       liveStatus.textContent = "آخر فحص: " + new Date().toLocaleTimeString("ar-EG");
     } catch (e) {
-      console.warn("فشل تنفيذ دورة الفحص:", e);
-      liveStatus.textContent = "حدث خطأ أثناء الفحص";
+      console.warn("فشل تنفيذ دورة الفحص:", e && e.message ? e.message : e);
+      liveStatus.textContent = "خطأ: " + (e && e.message ? e.message : "غير معروف");
       if (bgBrowserRef) {
         try { bgBrowserRef.close(); } catch (err) {}
       }
